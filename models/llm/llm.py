@@ -1,25 +1,39 @@
 import base64
-import tempfile
 import json
-import time
+import logging
 import os
+import tempfile
+import time
 from collections.abc import Generator
 from typing import Optional, Union
 
-import requests
 import google.ai.generativelanguage as glm
 import google.genai as genai
+import requests
 from google.api_core import exceptions
-from google.genai.types import File, GenerateContentConfig,Tool, GoogleSearch, Part, Content,FunctionDeclaration
-from dify_plugin.entities.model.llm import LLMResult, LLMResultChunk, LLMResultChunkDelta
+from google.genai.types import (
+    Content,
+    File,
+    FunctionDeclaration,
+    GenerateContentConfig,
+    GoogleSearch,
+    Part,
+    Tool,
+)
+
+from dify_plugin.entities.model.llm import (
+    LLMResult,
+    LLMResultChunk,
+    LLMResultChunkDelta,
+)
 from dify_plugin.entities.model.message import (
     AssistantPromptMessage,
-    PromptMessageRole,
-    PromptMessage,
     MultiModalPromptMessageContent,
-    PromptMessageContentType,
-    PromptMessageTool,
+    PromptMessage,
     PromptMessageContent,
+    PromptMessageContentType,
+    PromptMessageRole,
+    PromptMessageTool,
     SystemPromptMessage,
     ToolPromptMessage,
     UserPromptMessage,
@@ -36,10 +50,9 @@ from dify_plugin.errors.model import (
 from dify_plugin.interfaces.model.large_language_model import LargeLanguageModel
 
 from .utils import FileCache
-from typing import Optional
-
 
 file_cache = FileCache()
+
 
 class GoogleLargeLanguageModel(LargeLanguageModel):
     def _invoke(
@@ -66,7 +79,18 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
         :param user: unique user id
         :return: full response or stream response chunk generator result
         """
-        return self._generate(model, credentials, prompt_messages, model_parameters, tools, stop, stream, user)
+        logging.info(f"Invoking model: {model}")
+        return self._generate(
+            model,
+            credentials,
+            prompt_messages,
+            model_parameters,
+            tools,
+            stop,
+            stream,
+            user,
+        )
+
     def get_num_tokens(
         self,
         model: str,
@@ -94,8 +118,11 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
         :return: Combined string with necessary human_prompt and ai_prompt tags.
         """
         messages = messages.copy()
-        text = "".join((self._convert_one_message_to_text(message) for message in messages))
+        text = "".join(
+            (self._convert_one_message_to_text(message) for message in messages)
+        )
         return text.rstrip()
+
     def _convert_tools_to_glm_tool(self, tools: list[PromptMessageTool]) -> glm.Tool:
         """
         Convert tool messages to glm tools
@@ -114,7 +141,9 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
                 }
             if properties:
                 parameters = glm.Schema(
-                    type=glm.Type.OBJECT, properties=properties, required=tool.parameters.get("required", [])
+                    type=glm.Type.OBJECT,
+                    properties=properties,
+                    required=tool.parameters.get("required", []),
                 )
             else:
                 parameters = None
@@ -134,7 +163,13 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
         """
         try:
             ping_message = UserPromptMessage(content="ping")
-            self._generate(model, credentials, [ping_message], stream=False, model_parameters={"max_output_tokens": 5})
+            self._generate(
+                model,
+                credentials,
+                [ping_message],
+                stream=False,
+                model_parameters={"max_output_tokens": 5},
+            )
         except Exception as ex:
             raise CredentialsValidateFailedError(str(ex))
 
@@ -161,6 +196,9 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
         :param user: unique user id
         :return: full response or stream response chunk generator result
         """
+        logging.info(f"Generating content with model: {model}")
+        logging.info(f"Model parameters: {model_parameters}")
+        logging.info(f"Prompt messages: {prompt_messages}")
         config = GenerateContentConfig()
         if schema := model_parameters.get("schema"):
             try:
@@ -168,7 +206,9 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
             except:
                 raise exceptions.InvalidArgument("Invalid JSON Schema")
             if tools:
-                raise exceptions.InvalidArgument("gemini not support use Tools and JSON Schema at same time")
+                raise exceptions.InvalidArgument(
+                    "gemini not support use Tools and JSON Schema at same time"
+                )
             config.response_schema = schema
             config.response_mime_type = "application/json"
         if stop:
@@ -180,22 +220,44 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
         config.temperature = model_parameters.get("temperature", None)
         config.max_output_tokens = model_parameters.get("max_output_tokens", None)
         config.system_instruction = model_parameters.get("system_instruction", None)
-        functions: list[FunctionDeclaration] = [Tool(google_search=GoogleSearch())] if model_parameters.get("grounding") else []
+        functions: list[FunctionDeclaration] = (
+            [Tool(google_search=GoogleSearch())]
+            if model_parameters.get("grounding")
+            else []
+        )
         for tool in tools or []:
-            functions.append(FunctionDeclaration(name=tool.name, description=tool.description,parameters=tool.parameters))
+            functions.append(
+                FunctionDeclaration(
+                    name=tool.name,
+                    description=tool.description,
+                    parameters=tool.parameters,
+                )
+            )
             pass
         contents: list[Content] = []
         for msg in prompt_messages:
             if msg.role == PromptMessageRole.SYSTEM:
                 config.system_instruction = msg.content
             elif msg.role == PromptMessageRole.ASSISTANT:
-                contents.append({"role": PromptMessageRole.ASSISTANT, "parts": [Part.from_text(text=msg.content)]})
+                contents.append(
+                    {
+                        "role": PromptMessageRole.ASSISTANT,
+                        "parts": [Part.from_text(text=msg.content)],
+                    }
+                )
             elif msg.role == PromptMessageRole.USER:
-                if isinstance(msg.content, list) and all(isinstance(item, PromptMessageContent) for item in msg.content):
+                if isinstance(msg.content, list) and all(
+                    isinstance(item, PromptMessageContent) for item in msg.content
+                ):
                     for c in msg.content:
                         if c.type == PromptMessageContentType.TEXT:
                             contents.append(Part.from_text(text=c.data))
-                        if c.type in [PromptMessageContentType.IMAGE, PromptMessageContentType.VIDEO, PromptMessageContentType.AUDIO, PromptMessageContentType.DOCUMENT]:
+                        if c.type in [
+                            PromptMessageContentType.IMAGE,
+                            PromptMessageContentType.VIDEO,
+                            PromptMessageContentType.AUDIO,
+                            PromptMessageContentType.DOCUMENT,
+                        ]:
                             file = self._upload_file_content_to_google(c, credentials)
                             contents.append(file)
                 elif isinstance(msg.content, str):
@@ -207,7 +269,10 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
 
         client = genai.Client(api_key=credentials["google_api_key"])
         if not contents:
-            raise InvokeError("The user prompt message is required. You only add a system prompt message.")
+            raise InvokeError(
+                "The user prompt message is required. You only add a system prompt message."
+            )
+        logging.info("Calling generate_content_stream")
         index = 0
         for chunk in client.models.generate_content_stream(
             model=model,
@@ -215,38 +280,54 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
             config=config,
         ):
             index += 1
+            logging.info(f"Received chunk {index}")
             assistant_prompt_message = AssistantPromptMessage(content="")
             if chunk.text:
                 assistant_prompt_message.content += chunk.text
             if chunk.function_calls:
                 assistant_prompt_message.tool_calls = [
-                        AssistantPromptMessage.ToolCall(
-                            id=chunk.function_calls.name,
-                            type="function",
-                            function=AssistantPromptMessage.ToolCall.ToolCallFunction(
-                                name=chunk.function_calls.name,
-                                arguments=json.dumps(dict(chunk.function_calls.args.items())),
+                    AssistantPromptMessage.ToolCall(
+                        id=chunk.function_calls.name,
+                        type="function",
+                        function=AssistantPromptMessage.ToolCall.ToolCallFunction(
+                            name=chunk.function_calls.name,
+                            arguments=json.dumps(
+                                dict(chunk.function_calls.args.items())
                             ),
-                        )
-                    ]
+                        ),
+                    )
+                ]
             if chunk.usage_metadata:
                 prompt_tokens = chunk.usage_metadata.prompt_token_count
                 completion_tokens = chunk.usage_metadata.candidates_token_count
             else:
                 prompt_tokens = self.get_num_tokens(model, credentials, prompt_messages)
-                completion_tokens = self.get_num_tokens(model, credentials, [assistant_prompt_message])
+                completion_tokens = self.get_num_tokens(
+                    model, credentials, [assistant_prompt_message]
+                )
             if chunk.candidates[0].finish_reason:
                 yield LLMResultChunk(
                     model=model,
                     prompt_messages=prompt_messages,
-                    delta=LLMResultChunkDelta(index=index, message=assistant_prompt_message,finish_reason=chunk.candidates[0].finish_reason,usage=self._calc_response_usage(model,credentials,prompt_tokens,completion_tokens)),
+                    delta=LLMResultChunkDelta(
+                        index=index,
+                        message=assistant_prompt_message,
+                        finish_reason=chunk.candidates[0].finish_reason,
+                        usage=self._calc_response_usage(
+                            model, credentials, prompt_tokens, completion_tokens
+                        ),
+                    ),
                 )
+                logging.info(f"Finished reason: {chunk.candidates[0].finish_reason}")
                 return
             yield LLMResultChunk(
                 model=model,
                 prompt_messages=prompt_messages,
-                delta=LLMResultChunkDelta(index=index, message=assistant_prompt_message),
-                )
+                delta=LLMResultChunkDelta(
+                    index=index, message=assistant_prompt_message
+                ),
+            )
+        logging.info("Finished generating content")
 
     def _convert_one_message_to_text(self, message: PromptMessage) -> str:
         """
@@ -259,7 +340,9 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
         ai_prompt = "\n\nmodel:"
         content = message.content
         if isinstance(content, list):
-            content = "".join((c.data for c in content if c.type != PromptMessageContentType.IMAGE))
+            content = "".join(
+                (c.data for c in content if c.type != PromptMessageContentType.IMAGE)
+            )
         if isinstance(message, UserPromptMessage):
             message_text = f"{human_prompt} {content}"
         elif isinstance(message, AssistantPromptMessage):
@@ -270,40 +353,72 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
             raise ValueError(f"Got unknown type {message}")
         return message_text
 
-    def _upload_file_content_to_google(self, message_content: MultiModalPromptMessageContent,credentials:dict) -> File:
+    def _upload_file_content_to_google(
+        self, message_content: MultiModalPromptMessageContent, credentials: dict
+    ) -> File:
+        logging.info("Starting file upload to Google")
         client = genai.Client(api_key=credentials["google_api_key"])
 
         key = f"{message_content.type.value}:{hash(message_content.data)}"
+        logging.info(f"Checking file cache for key: {key}")
         if file_cache.exists(key):
             try:
+                logging.info(f"File found in cache: {file_cache.get(key)}")
                 return genai.get_file(file_cache.get(key))
             except:
+                logging.warning("Failed to get file from cache, proceeding with upload")
                 pass
+        logging.info("File not in cache or failed to retrieve, uploading...")
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             if message_content.base64_data:
+                logging.info("Processing base64 data")
                 file_content = base64.b64decode(message_content.base64_data)
                 temp_file.write(file_content)
             else:
                 try:
+                    logging.info(f"Fetching data from URL: {message_content.url}")
                     response = requests.get(message_content.url)
                     response.raise_for_status()
                     temp_file.write(response.content)
+                    logging.info("Successfully fetched data from URL")
                 except Exception as ex:
-                    raise ValueError(f"Failed to fetch data from url {message_content.url}, {ex}")
+                    logging.error(
+                        f"Failed to fetch data from url {message_content.url}, {ex}"
+                    )
+                    raise ValueError(
+                        f"Failed to fetch data from url {message_content.url}, {ex}"
+                    )
             temp_file.flush()
-        file = client.files.upload(file=temp_file.name, config={"mime_type": message_content.mime_type})
+        logging.info(
+            f"Uploading file: {temp_file.name} with mime type: {message_content.mime_type}"
+        )
+        file = client.files.upload(
+            file=temp_file.name, config={"mime_type": message_content.mime_type}
+        )
+        logging.info(
+            f"File upload started, file name: {file.name}, state: {file.state.name}"
+        )
         while file.state.name == "PROCESSING":
+            logging.info("File is still processing, waiting...")
             time.sleep(5)
             file = client.files.get(file.name)
+        logging.info(f"File processing finished, final state: {file.state.name}")
         # google will delete your upload files in 2 days.
+        logging.info(f"Setting file cache for key: {key} with file name: {file.name}")
         file_cache.setex(key, 47 * 60 * 60, file.name)
 
         try:
+            logging.info(f"Deleting temporary file: {temp_file.name}")
             os.unlink(temp_file.name)
+            logging.info("Temporary file deleted")
         except PermissionError:
             # windows may raise permission error
+            logging.warning(
+                f"Permission error when deleting temporary file: {temp_file.name}"
+            )
             pass
-        print("file uploaded", file.download_uri,file.mime_type,file.state.name)
+        print("file uploaded", file.download_uri, file.mime_type, file.state.name)
+        logging.info("File upload to Google finished")
         return file
 
     @property
@@ -325,7 +440,10 @@ class GoogleLargeLanguageModel(LargeLanguageModel):
                 exceptions.GatewayTimeout,
                 exceptions.DeadlineExceeded,
             ],
-            InvokeRateLimitError: [exceptions.ResourceExhausted, exceptions.TooManyRequests],
+            InvokeRateLimitError: [
+                exceptions.ResourceExhausted,
+                exceptions.TooManyRequests,
+            ],
             InvokeAuthorizationError: [
                 exceptions.Unauthenticated,
                 exceptions.PermissionDenied,
